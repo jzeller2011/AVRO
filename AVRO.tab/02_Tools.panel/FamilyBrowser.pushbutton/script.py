@@ -1441,7 +1441,7 @@ class FamilyBrowserDialog(object):
             self._load_families(paths)
 
         if not self._run_in_revit(load_in_revit):
-            self._set_status(i18n.t("status_ready"))
+            self._set_status(i18n.t("revit_bridge_unavailable"))
 
     def _on_load_mode_card_click(self, fi, e):
         shift = (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift
@@ -2831,7 +2831,7 @@ class FamilyBrowserDialog(object):
                 self._set_status(message)
 
         if not self._run_in_revit(place_in_revit, placed):
-            self._set_status(i18n.t("status_ready"))
+            self._set_status(i18n.t("revit_bridge_unavailable"))
 
     def _run_pending_placement(self, fi, uidoc=None):
         if uidoc is None:
@@ -2947,7 +2947,13 @@ class FamilyBrowserDialog(object):
         ribbon_i18n.init_from_config()
         avro_log.event("family_browser", "show_start")
         # Must be created now, while the ribbon button gives us API context.
-        self._bridge = revit_bridge.RevitBridge(u"AVRO: Family Browser")
+        try:
+            self._bridge = revit_bridge.RevitBridge(u"AVRO: Family Browser")
+        except Exception as ex:
+            # Revit refused (not in API context). Open anyway so the library
+            # is browsable; placing/loading will report that Revit is unavailable.
+            libcache._log(u"revit bridge: {}".format(as_unicode(ex)))
+            self._bridge = None
         try:
             self._init_window()
             self._set_status(i18n.t("opening"))
@@ -3013,4 +3019,7 @@ def _main():
     FamilyBrowserDialog().show()
 
 
-_main()
+# Only run when pyRevit executes this as the button command, never when the
+# file is imported or parsed (pyRevit runs commands as ``__main__``).
+if __name__ == "__main__":
+    _main()
