@@ -104,7 +104,15 @@ class FamilyBrowserH1Tests(unittest.TestCase):
         self.assertIn("_scan_gen += 1", cleanup_source)
         self.assertIn("not self._window_closing", preview_source)
         self.assertIn("pending_request is not None", preview_source)
-        self.assertIn("preview_thread.join", show_source)
+        # Modeless fork: show() returns right away and teardown happens in
+        # the Closed handler, which must release the Revit bridge.
+        self.assertIn("self.win.Show()", show_source)
+        self.assertNotIn("ShowDialog()", show_source.split('"""', 2)[-1])
+        self.assertIn("RevitBridge(", show_source)
+        closed_source = ast.get_source_segment(
+            source, methods["_on_window_closed"])
+        self.assertIn("bridge.dispose()", closed_source)
+        self.assertIn("_cleanup_window_resources", closed_source)
         close_source = ast.get_source_segment(
             source, methods["_on_window_closing"])
         self.assertIn("saving_state", close_source)

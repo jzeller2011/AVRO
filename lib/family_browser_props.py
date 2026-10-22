@@ -76,38 +76,59 @@ class PropsPanelController(object):
         hint.Text = u""
         hint.Visibility = Visibility.Collapsed
 
-    def inspect(self, fi):
-        """Inspect *fi* and render its metadata in the panel."""
+    def inspect(self, fi, on_finished=None):
+        """Inspect *fi* and render its metadata in the panel.
+
+        Cached metadata is shown immediately. Otherwise the .rfa has to be
+        opened with ``OpenDocumentFile``, which is Revit API work: in the
+        modeless window it is queued through the dialog's Revit bridge and
+        rendered when Revit gets to it. ``on_finished`` runs either way.
+        """
+        def finished():
+            self._inspect_busy = False
+            if on_finished is not None:
+                on_finished()
+
         if self._inspect_busy:
             avro_log.event("props", "inspect_busy_drop")
             return
         if fi is None or not getattr(fi, "path", None):
             self.reset()
+            if on_finished is not None:
+                on_finished()
             return
         path = fi.path
         self._inspect_busy = True
+        queued = False
         try:
             self.set_loading(path)
             meta = family_inspector.load_cached(path)
-            if meta is None:
-                if self._props_path != path:
-                    return
-                try:
-                    app = (self.dialog.doc.Application
-                           if self.dialog.doc is not None else None)
-                except Exception as ex:
-                    avro_log.exception("props.inspect.app", ex)
-                    app = None
-                meta = family_inspector.inspect(
-                    path, app=app, use_cache=False,
-                    known_version=getattr(fi, "revit_version", u""))
-            else:
+            if meta is not None:
                 self._props_path = path
+                self.fill(fi, meta)
+                return
             if self._props_path != path:
                 return
-            self.fill(fi, meta)
+            known_version = getattr(fi, "revit_version", u"")
+
+            def inspect_in_revit(uiapp):
+                return family_inspector.inspect(
+                    path, app=uiapp.Application, use_cache=False,
+                    known_version=known_version)
+
+            def inspected(meta, error):
+                try:
+                    if error is not None:
+                        meta = {"ok": False, "error": as_unicode(error)}
+                    if self._props_path == path:
+                        self.fill(fi, meta)
+                finally:
+                    finished()
+
+            queued = self.dialog._run_in_revit(inspect_in_revit, inspected)
         finally:
-            self._inspect_busy = False
+            if not queued:
+                finished()
 
     def begin_inspect(self, fi):
         """Show preparation state, then inspect after WPF can render it."""
@@ -118,6 +139,12 @@ class PropsPanelController(object):
             avro_log.event("props", "inspect_busy_drop")
             return
         path = fi.path
+        if (self.dialog._revit_busy()
+                and family_inspector.load_cached(path) is None):
+            # Opening the .rfa needs Revit, which is still busy (for example
+            # waiting for a placement click). Don't queue behind it.
+            self.dialog._set_status(i18n.t("revit_action_busy"))
+            return
         self.set_loading(path)
         self.dialog._set_status(i18n.t("reading_family"))
         win = self.dialog.win
@@ -142,9 +169,10 @@ class PropsPanelController(object):
                 or self._props_path != path):
             return
         try:
-            self.inspect(fi)
-        finally:
+            self.inspect(fi, on_finished=self._restore_after_inspect)
+        except Exception:
             self._restore_after_inspect()
+            raise
 
     def _restore_after_inspect(self):
         win = self.dialog.win

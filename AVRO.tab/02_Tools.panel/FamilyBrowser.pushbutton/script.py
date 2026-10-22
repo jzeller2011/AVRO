@@ -2,7 +2,39 @@
 """
 Family Browser — pyRevit extension (AVRO)
 Entry point script.
+
+Modeless fork: the window stays open while you keep working in Revit.
+Every Revit API call made from the window goes through ``revit_bridge``
+(an ExternalEvent), because a modeless window's event handlers run
+outside Revit's API context.
 """
+
+# ---------------------------------------------------------------------------
+# User-configurable settings
+# ---------------------------------------------------------------------------
+# Keep this button's IronPython engine alive after the script returns.
+# Required for a modeless window: without it pyRevit tears the engine down
+# while the window (and its event handlers) are still in use.
+__persistentengine__ = True
+
+# Set to False to get the original single-window behaviour back where a
+# second click on the ribbon button opens another browser window.
+REUSE_OPEN_WINDOW = True
+
+# Bring the browser to the front after "Load selected" finishes.
+FOCUS_BROWSER_AFTER_LOAD = True
+
+# How a left-click places a family:
+#   "prompt" - PromptForFamilyInstancePlacement, as upstream. Reports
+#              placed/cancelled in the status bar; the browser waits until
+#              you finish (Esc) before accepting another click.
+#   "post"   - PostRequestForElementTypePlacement. Hands off to Revit's own
+#              placement command and returns at once, so you can click
+#              another family any time. No placed/cancelled status.
+# Try "post" if the family doesn't attach to the cursor until you click
+# into the Revit view first.
+PLACEMENT_MODE = "prompt"
+
 import os
 import re
 import sys
@@ -70,6 +102,7 @@ import family_browser_cards
 import card_layout
 import family_browser_status
 import family_browser_library
+import revit_bridge
 from revit_utils import as_unicode, revit_name
 
 # ---------------------------------------------------------------------------
@@ -203,6 +236,43 @@ def _apply_card_metrics(card, preview_img, card_w, card_h):
 # ---------------------------------------------------------------------------
 # Dialog class
 # ---------------------------------------------------------------------------
+def _same_document(a, b):
+    """Compare Revit documents; API wrappers are not identity-stable."""
+    if a is None or b is None:
+        return a is b
+    try:
+        return bool(a.Equals(b))
+    except Exception:
+        return a is b
+
+
+# The open browser is remembered in the AppDomain so a second click on the
+# ribbon button brings it forward instead of opening a duplicate window.
+_OPEN_BROWSER_KEY = "AVRO.FamilyBrowser.OpenWindow"
+
+
+def _find_open_browser():
+    try:
+        return System.AppDomain.CurrentDomain.GetData(_OPEN_BROWSER_KEY)
+    except Exception:
+        return None
+
+
+def _remember_open_browser(dialog):
+    try:
+        System.AppDomain.CurrentDomain.SetData(_OPEN_BROWSER_KEY, dialog)
+    except Exception:
+        pass
+
+
+def _forget_open_browser(dialog):
+    try:
+        if _find_open_browser() is dialog:
+            System.AppDomain.CurrentDomain.SetData(_OPEN_BROWSER_KEY, None)
+    except Exception:
+        pass
+
+
 class FamilyBrowserDialog(object):
 
     def _file_signature(self, path):
@@ -250,9 +320,22 @@ class FamilyBrowserDialog(object):
         return None
 
     def _current_revit_label(self):
-        """Return the running Revit release label, for example ``R22``."""
+        """Return the running Revit release label, for example ``R22``.
+
+        Read once (in API context, from ``__init__``) and cached, so the
+        modeless window never touches the API from a WPF event handler.
+        """
+        if self._revit_label is None:
+            self._revit_label = self._read_revit_label()
+        return self._revit_label
+
+    def _read_revit_label(self):
         try:
-            app = self.doc.Application
+            if self.doc is not None:
+                app = self.doc.Application
+            else:
+                # The browser can now be opened with no project open.
+                app = __revit__.Application
             number = self._release_number(
                 getattr(app, "VersionNumber", u""))
             if number is None:
@@ -268,6 +351,9 @@ class FamilyBrowserDialog(object):
         self.win = None
         self.ui = None
         self.doc = revit.doc
+        self._revit_label = None
+        self._revit_label = self._read_revit_label()
+        self._bridge = None
         self.cfg = config.load()
         i18n.set_language(config.read_ui_language())
         self._scan = {"roots": [], "all": [], "index": {}}
@@ -748,25 +834,63 @@ class FamilyBrowserDialog(object):
         self._project_family_index_doc = None
 
     def _start_project_family_index_build(self):
-        """Build the project family index on the UI thread after window init."""
-        doc = self.doc
+        """Build the project family index in Revit's API context."""
         win = self.win
         gen = self._window_gen
-        if doc is None or win is None:
+        if win is None:
             return
 
-        def build_on_ui():
+        def build_in_revit(uiapp):
             if self.win is not win or gen != self._window_gen:
+                return
+            if self._bind_active_doc(uiapp) is None:
                 return
             try:
                 self._build_project_family_index_sync()
             except Exception as ex:
                 libcache._log(u"family index build: {}".format(as_unicode(ex)))
 
+        self._run_in_revit(build_in_revit)
+
+    # -- Revit API bridge -------------------------------------------------
+
+    def _run_in_revit(self, work, on_done=None):
+        """Queue ``work(uiapp)`` for Revit's API context.
+
+        ``on_done(result, error)`` runs afterwards on the same (UI) thread and
+        is skipped once the window is gone. Returns False if not queued.
+        """
+        bridge = self._bridge
+        if bridge is None:
+            return False
+
+        def finish(result, error):
+            if on_done is None or self.win is None or self._window_closing:
+                return
+            on_done(result, error)
+
+        return bridge.run(work, finish)
+
+    def _revit_busy(self):
+        bridge = self._bridge
+        return bridge is not None and bridge.busy
+
+    def _bind_active_doc(self, uiapp):
+        """Point ``self.doc`` at the project that is active right now.
+
+        The window can stay open across project switches, so every API action
+        re-reads the active document instead of trusting the one captured
+        when the window opened. Returns the active UIDocument or None.
+        """
         try:
-            win.Dispatcher.BeginInvoke(System.Action(build_on_ui))
-        except Exception as ex:
-            libcache._log(u"family index schedule: {}".format(as_unicode(ex)))
+            uidoc = uiapp.ActiveUIDocument
+        except Exception:
+            uidoc = None
+        doc = uidoc.Document if uidoc is not None else None
+        if not _same_document(doc, self.doc):
+            self._invalidate_project_family_index()
+        self.doc = doc
+        return uidoc
 
     def _store_project_family_index(self, index):
         self._project_family_index = index
@@ -775,7 +899,7 @@ class FamilyBrowserDialog(object):
     def _project_family_index_ready(self):
         return (
             self._project_family_index is not None
-            and self._project_family_index_doc is self.doc
+            and _same_document(self._project_family_index_doc, self.doc)
         )
 
     def _build_project_family_index_sync(self):
@@ -983,8 +1107,9 @@ class FamilyBrowserDialog(object):
         return True
 
     def _on_window_closing(self, sender, e):
-        # Placement closes the window and reopens it; async cache save must
-        # not overwrite recent_families written right after placement.
+        # Upstream placement closed the window and reopened it. The modeless
+        # fork never sets the pending-placement fields, so is_placement is
+        # always False here; the check is kept to stay close to upstream.
         is_placement = (self._pending_symbol_id
                         or self._pending_placement_fi is not None)
         if (not is_placement and self._close_requested
@@ -1296,8 +1421,26 @@ class FamilyBrowserDialog(object):
         if self._hover_card is not None:
             self._hover_card.Background = COL_CARD_HOV
         if paths:
-            self._load_families(paths)
+            self._queue_load_families(paths)
         else:
+            self._set_status(i18n.t("status_ready"))
+
+    def _queue_load_families(self, paths):
+        """Run ``_load_families`` in Revit's API context."""
+        if self._revit_busy():
+            self._set_status(i18n.t("revit_action_busy"))
+            return
+        self._set_status(i18n.t("waiting_for_revit"))
+
+        def load_in_revit(uiapp):
+            if self.win is None or self._window_closing:
+                return
+            if self._bind_active_doc(uiapp) is None:
+                self._set_status(i18n.t("no_open_document"))
+                return
+            self._load_families(paths)
+
+        if not self._run_in_revit(load_in_revit):
             self._set_status(i18n.t("status_ready"))
 
     def _on_load_mode_card_click(self, fi, e):
@@ -2661,35 +2804,38 @@ class FamilyBrowserDialog(object):
                 ver=as_unicode(getattr(fi, "revit_version", u"")),
                 cur=host_label))
             return
-        uidoc = revit.uidoc
-        if uidoc is None or uidoc.ActiveView is None:
-            self._set_status(i18n.t("no_active_view"))
+        # Modeless: the window stays open. One Revit action at a time — a
+        # second click while Revit is still prompting would only queue up
+        # behind the running placement, which is confusing.
+        if self._revit_busy():
+            self._set_status(i18n.t("revit_action_busy"))
             return
-        search_query = u""
-        scroll_offset = 0.0
-        if self.ui is not None:
-            search_query = as_unicode(self.ui.SearchBox.Text).strip()
-            try:
-                scroll_offset = float(
-                    self.ui.FamilyScrollViewer.VerticalOffset)
-            except (TypeError, ValueError):
-                pass
-        self._reopen_ui_state = {
-            "scope": list(self._folder_scope),
-            "label": self._folder_scope_label,
-            "tree_tag": self._current_tree_tag(),
-            "search_query": search_query,
-            "scroll_offset": scroll_offset,
-        }
-        self._pending_placement_fi = fi
-        self._pending_family_name = as_unicode(fi.name)
-        self._pending_family_path = libcache._norm_path(fi.path)
-        config.add_recent(self._pending_family_path)
+        config.add_recent(libcache._norm_path(fi.path))
         self.cfg = config.load()
-        self.win.Close()
+        self._set_status(i18n.t("waiting_for_revit"))
 
-    def _run_pending_placement(self, fi):
-        uidoc = revit.uidoc
+        def place_in_revit(uiapp):
+            uidoc = self._bind_active_doc(uiapp)
+            if uidoc is None:
+                return i18n.t("no_open_document")
+            if uidoc.ActiveView is None:
+                return i18n.t("no_active_view")
+            if self.win is not None and not self._window_closing:
+                self._set_status(i18n.t("placing_in_revit", name=fi.name))
+            return self._run_pending_placement(fi, uidoc)
+
+        def placed(message, error):
+            if error is not None:
+                message = i18n.t("placement_error", err=as_unicode(error))
+            if message:
+                self._set_status(message)
+
+        if not self._run_in_revit(place_in_revit, placed):
+            self._set_status(i18n.t("status_ready"))
+
+    def _run_pending_placement(self, fi, uidoc=None):
+        if uidoc is None:
+            uidoc = revit.uidoc
         if uidoc is None or uidoc.ActiveView is None or fi is None:
             return u""
         last_error = None
@@ -2714,6 +2860,9 @@ class FamilyBrowserDialog(object):
         return i18n.t("placement_error", err=as_unicode(last_error))
 
     def _prompt_place_family(self, uidoc, symbol, fi):
+        if PLACEMENT_MODE == "post":
+            uidoc.PostRequestForElementTypePlacement(symbol)
+            return i18n.t("placing_in_revit", name=fi.name)
         try:
             uidoc.PromptForFamilyInstancePlacement(symbol)
         except OperationCanceledException:
@@ -2777,7 +2926,8 @@ class FamilyBrowserDialog(object):
             parts.append(i18n.t("not_loaded", n=len(errors)))
         self._set_status(
             u"  |  ".join(parts) if parts else i18n.t("done"))
-        self._restore_window_focus(status_key=None, raise_window=True)
+        if FOCUS_BROWSER_AFTER_LOAD:
+            self._restore_window_focus(status_key=None, raise_window=True)
 
     def _set_status(self, text):
         self._status_controller.set_status(text)
@@ -2786,72 +2936,81 @@ class FamilyBrowserDialog(object):
         self._status_controller.set_breadcrumb(text)
 
     def show(self):
+        """Open the browser as a modeless window and return immediately.
+
+        The original version used ``ShowDialog()`` in a loop: placing a family
+        closed the window, ran the placement, then rebuilt the window. Here
+        the window stays open and placement/loading run through
+        ``self._bridge`` while Revit stays usable.
+        """
         i18n.init_from_config()
         ribbon_i18n.init_from_config()
         avro_log.event("family_browser", "show_start")
-        first_open = True
+        # Must be created now, while the ribbon button gives us API context.
+        self._bridge = revit_bridge.RevitBridge(u"AVRO: Family Browser")
         try:
-            while True:
-                self._init_window()
-                if first_open:
-                    self._set_status(i18n.t("opening"))
-                    self._start_initial_load()
-                    first_open = False
-                else:
-                    i18n.init_from_config()
-                    self._apply_language()
-                    self._restore_ui_after_reopen()
-                    if self._placement_status_msg:
-                        self._set_status(self._placement_status_msg)
-                        self._placement_status_msg = None
+            self._init_window()
+            self._set_status(i18n.t("opening"))
+            self._start_initial_load()
+            self.win.Closed += self._on_window_closed
+            _remember_open_browser(self)
+            self.win.Show()
+        except Exception as ex:
+            libcache._log(u"show window: {}".format(as_unicode(ex)))
+            self._on_window_closed(None, None)
+            raise
 
-                try:
-                    self.win.ShowDialog()
-                except Exception as ex:
-                    libcache._log(u"show dialog: {}".format(as_unicode(ex)))
-                    break
-
-                # Closing invalidates the preview generation. Let an in-flight
-                # extraction leave before returning control to Revit's ribbon.
-                preview_thread = self._preview_worker_thread
-                if preview_thread is not None and preview_thread is not threading.currentThread():
-                    preview_thread.join(10.0)
-
-                pending_id = self._pending_symbol_id
-                pending_fi = self._pending_placement_fi
-                self._pending_symbol_id = None
-                self._pending_placement_fi = None
-                self._pending_family_name = u""
-                self._pending_family_path = None
-                self.win = None
-                self.ui = None
-
-                if pending_fi is None and not pending_id:
-                    break
-
-                if pending_fi is not None:
-                    self._placement_status_msg = self._run_pending_placement(pending_fi)
-                else:
-                    self._placement_status_msg = self._run_pending_placement(None)
-                # PromptForFamilyInstancePlacement has returned; reopen directly.
-        finally:
-            self._window_closing = True
-            ui_notify.unregister_language_listener(
-                self._on_external_language_changed)
-            ui_notify.unregister_theme_listener(
-                self._on_external_theme_changed)
+    def _on_window_closed(self, sender, e):
+        """Final teardown once WPF has closed the window (was show()'s finally)."""
+        self._window_closing = True
+        _forget_open_browser(self)
+        ui_notify.unregister_language_listener(
+            self._on_external_language_changed)
+        ui_notify.unregister_theme_listener(
+            self._on_external_theme_changed)
+        win = self.win
+        if win is not None:
             try:
-                if self.win is not None:
-                    self._cleanup_window_resources()
-            except Exception as ex:
-                libcache._log(u"show cleanup: {}".format(as_unicode(ex)))
-            self.win = None
-            self.ui = None
-            avro_log.event("family_browser", "show_end")
+                win.Closed -= self._on_window_closed
+            except Exception:
+                pass
+        try:
+            if win is not None:
+                self._cleanup_window_resources()
+        except Exception as ex:
+            libcache._log(u"show cleanup: {}".format(as_unicode(ex)))
+        # No preview-thread join here: the persistent engine outlives the
+        # window, and the worker already exits on the bumped generation id.
+        bridge = self._bridge
+        self._bridge = None
+        if bridge is not None:
+            bridge.dispose()
+        self.win = None
+        self.ui = None
+        avro_log.event("family_browser", "show_end")
+
+    def bring_to_front(self):
+        """Re-show an already open browser (second click on the button)."""
+        if self.win is None or self._window_closing:
+            return False
+        self._restore_window_focus(status_key=None, raise_window=True)
+        return True
 
 
 # ---------------------------------------------------------------------------
 # pyRevit entry — runs when the button is clicked
 # ---------------------------------------------------------------------------
-dlg = FamilyBrowserDialog()
-dlg.show()
+def _main():
+    if REUSE_OPEN_WINDOW:
+        existing = _find_open_browser()
+        if existing is not None:
+            try:
+                if existing.bring_to_front():
+                    return
+            except Exception:
+                # Left over from before a pyRevit reload; open a fresh one.
+                pass
+    FamilyBrowserDialog().show()
+
+
+_main()
