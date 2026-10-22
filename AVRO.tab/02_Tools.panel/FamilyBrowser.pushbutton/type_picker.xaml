@@ -83,9 +83,15 @@
             <Setter Property="Padding" Value="6,4"/>
         </Style>
 
+        <!-- Foreground is set here, and again for IsSelected, because the
+             built-in DataGrid theme turns selected cell text white
+             (unreadable on the light SelBg). Selected rows are bold in the
+             theme's main text colour: near-black (light), near-white (dark). -->
         <Style TargetType="DataGridCell">
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="6,2"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextMain}"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="DataGridCell">
@@ -95,6 +101,12 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Foreground" Value="{DynamicResource TextMain}"/>
+                    <Setter Property="FontWeight" Value="Bold"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <Style TargetType="DataGridRow">
@@ -102,6 +114,7 @@
             <Style.Triggers>
                 <Trigger Property="IsSelected" Value="True">
                     <Setter Property="Background" Value="{DynamicResource SelBg}"/>
+                    <Setter Property="FontWeight" Value="Bold"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -142,7 +155,23 @@
                   Background="{DynamicResource BgPanel}"
                   RowBackground="{DynamicResource BgPanel}"
                   BorderBrush="{DynamicResource BorderMain}"
-                  FrozenColumnCount="1"/>
+                  FrozenColumnCount="2">
+            <DataGrid.Columns>
+                <!-- Tick column mirrors row selection. Clicking a box adds or
+                     removes that row without Ctrl; the header box (added in
+                     code) selects or clears everything shown. -->
+                <DataGridTemplateColumn Width="30" CanUserResize="False" CanUserSort="False">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <CheckBox HorizontalAlignment="Center" VerticalAlignment="Center"
+                                      Focusable="False"
+                                      IsChecked="{Binding IsSelected, Mode=TwoWay,
+                                                  RelativeSource={RelativeSource AncestorType=DataGridRow}}"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+        </DataGrid>
 
         <DockPanel Grid.Row="3" Margin="0,8,0,0" LastChildFill="True">
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">

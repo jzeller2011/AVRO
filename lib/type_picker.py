@@ -4,7 +4,7 @@ Type picker for families that ship a type catalog.
 
 A small modeless window owned by the Family Browser. It shows the catalog's
 types and parameter values from the .txt file alone (no Revit API), lets the
-user Ctrl/Shift-select several, then hands the chosen names back to the
+user tick several (or Ctrl/Shift-select), then hands the chosen names back to the
 browser, which loads only those types through its Revit bridge.
 """
 import clr
@@ -17,7 +17,7 @@ import System
 from System.Data import DataTable
 from System.Windows import Visibility
 from System.Windows.Controls import (
-    DataGridLength, DataGridRow, DataGridTextColumn, ItemsControl,
+    CheckBox, DataGridLength, DataGridRow, DataGridTextColumn, ItemsControl,
 )
 from System.Windows.Data import Binding
 from System.Windows.Input import Key
@@ -105,7 +105,14 @@ class TypePicker(object):
         self._table = table
 
         grid = self.ui.TypeGrid
-        grid.Columns.Clear()
+        # Column 0 is the tick column from type_picker.xaml; rebuild the rest.
+        while grid.Columns.Count > 1:
+            grid.Columns.RemoveAt(grid.Columns.Count - 1)
+        self._select_all_box = CheckBox()
+        self._select_all_box.Focusable = False
+        self._select_all_box.IsThreeState = False
+        self._select_all_box.ToolTip = i18n.t("picker_select_all")
+        grid.Columns[0].Header = self._select_all_box
         type_col = DataGridTextColumn()
         type_col.Header = i18n.t("picker_col_type")
         type_col.Binding = Binding("Type")
@@ -123,6 +130,7 @@ class TypePicker(object):
         self.ui.FilterBox.TextChanged += self._on_filter
         self.ui.TypeGrid.SelectionChanged += self._on_selection
         self.ui.TypeGrid.MouseDoubleClick += self._on_double_click
+        self._select_all_box.Click += self._on_select_all
         self.ui.BtnLoadTypes.Click += self._on_load
         self.ui.BtnPlaceType.Click += self._on_place
         self.ui.BtnCancelTypes.Click += self._on_cancel
@@ -193,13 +201,35 @@ class TypePicker(object):
             view.RowFilter = u" OR ".join(
                 u"[{}] LIKE '%{}%'".format(n, pattern) for n in names)
         self._update_counts()
+        self._sync_select_all()
 
     def _on_selection(self, sender, e):
         self._update_counts()
+        self._sync_select_all()
+
+    def _sync_select_all(self):
+        box = getattr(self, "_select_all_box", None)
+        if box is None:
+            return
+        grid = self.ui.TypeGrid
+        shown = grid.Items.Count
+        picked = grid.SelectedItems.Count
+        # Checked only when every visible row is ticked.
+        box.IsChecked = bool(shown) and picked >= shown
+
+    def _on_select_all(self, sender, e):
+        grid = self.ui.TypeGrid
+        if self._select_all_box.IsChecked:
+            grid.SelectAll()
+        else:
+            grid.UnselectAll()
 
     def _on_double_click(self, sender, e):
-        # Only rows count; ignore double-clicks on headers and scrollbars.
+        # Only rows count; ignore double-clicks on headers, scrollbars and
+        # the tick boxes (fast ticking would otherwise place a type).
         grid = self.ui.TypeGrid
+        if isinstance(e.OriginalSource, CheckBox):
+            return
         try:
             row = ItemsControl.ContainerFromElement(grid, e.OriginalSource)
         except Exception:
@@ -256,6 +286,7 @@ class TypePicker(object):
             self.ui.FilterBox.TextChanged -= self._on_filter
             self.ui.TypeGrid.SelectionChanged -= self._on_selection
             self.ui.TypeGrid.MouseDoubleClick -= self._on_double_click
+            self._select_all_box.Click -= self._on_select_all
             self.ui.BtnLoadTypes.Click -= self._on_load
             self.ui.BtnPlaceType.Click -= self._on_place
             self.ui.BtnCancelTypes.Click -= self._on_cancel

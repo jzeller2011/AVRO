@@ -33,7 +33,8 @@ Left-clicking a family that has a type catalog (`<family>.txt` beside the
 
 - The list comes from the `.txt` alone, so it opens instantly and Revit is
   not touched until you press a button.
-- Ctrl/Shift-click to pick several types; the filter box matches the type
+- Tick the types you want (header box = all shown), or Ctrl/Shift-click;
+  selected rows turn bold. The filter box matches the type
   name or any parameter value. Arrow Down jumps from the filter to the list.
 - **Load** loads only the picked types. **Load & place** (or Enter) loads them
   and puts the first one (catalog order) on the cursor. Double-clicking a row
