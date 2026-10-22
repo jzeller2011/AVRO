@@ -26,10 +26,33 @@ ran `PromptForFamilyInstancePlacement`, then rebuilt and reopened the window.
 Upstream's reopen helpers (`_restore_ui_after_reopen`, pending-placement
 fields) are left in place but unused, to keep merges from upstream easy.
 
+## Type catalog picker
+
+Left-clicking a family that has a type catalog (`<family>.txt` beside the
+`.rfa`) opens a small picker instead of loading the family straight away.
+
+- The list comes from the `.txt` alone, so it opens instantly and Revit is
+  not touched until you press a button.
+- Ctrl/Shift-click to pick several types; the filter box matches the type
+  name or any parameter value. Arrow Down jumps from the filter to the list.
+- **Load** loads only the picked types. **Load & place** (or Enter) loads them
+  and puts the first one (catalog order) on the cursor. Double-clicking a row
+  loads and places just that type.
+- Loading uses `Document.LoadFamilySymbol` per type in one transaction
+  ("AVRO: Load types: …"), so the family's other types are not loaded. Types
+  already in the project are reused.
+- Families without a catalog behave as before. So does **Load selected**
+  (batch mode), which still loads whole families.
+- Parser: `lib/type_catalog.py` (UTF-8, UTF-16 with or without BOM, and
+  Windows-1252; quoted fields; `""` for inch marks). Picker: `lib/type_picker.py`
+  and `type_picker.xaml`.
+
 ## Settings (top of `script.py`)
 
 - `REUSE_OPEN_WINDOW` — second ribbon click focuses the open browser.
 - `FOCUS_BROWSER_AFTER_LOAD` — raise the browser after "Load selected".
+- `OPEN_TYPE_PICKER_FOR_CATALOGS` — show the picker for catalog families.
+- `KEEP_TYPE_PICKER_OPEN` — leave the picker open after Load / Load & place.
 - `PLACEMENT_MODE` — `"prompt"` (upstream behaviour, reports placed/cancelled)
   or `"post"` (`PostRequestForElementTypePlacement`: hands off to Revit's own
   placement command and frees the browser immediately).
@@ -52,5 +75,11 @@ the repo's `scripts/check.py` pass on CPython only.
 7. Switch to another open project and place/load there.
 8. Close the browser in the middle of a placement; finish the placement; reopen.
 9. Click the ribbon button while the browser is open: it should come forward.
-10. Upstream's ADR 0002 asks for 20+ open/close cycles with previews loading.
+10. Catalog family: the picker lists every catalog row with readable column
+    headers; pick three types, Load & place. Only those three appear under the
+    family in the Project Browser and the first is on the cursor.
+11. Pick a type that is already loaded: it is placed, not duplicated.
+12. Filter with a value (e.g. `36`), clear it, press Enter with nothing
+    selected (expect the "select" hint), Esc closes the picker.
+13. Upstream's ADR 0002 asks for 20+ open/close cycles with previews loading.
     Do that before relying on it day to day.

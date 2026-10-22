@@ -1,0 +1,157 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Types"
+        Height="460" Width="680"
+        MinHeight="260" MinWidth="420"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        FontFamily="Segoe UI"
+        FontSize="12"
+        Background="{DynamicResource BgWindow}">
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="BgWindow"      Color="#F0F0F0"/>
+        <SolidColorBrush x:Key="BgPanel"       Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="BgSidebar"     Color="#E4E4E4"/>
+        <SolidColorBrush x:Key="BgToolbar"     Color="#F5F5F5"/>
+        <SolidColorBrush x:Key="BgInput"       Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="BorderMain"    Color="#ABABAB"/>
+        <SolidColorBrush x:Key="BorderLight"   Color="#D0D0D0"/>
+        <SolidColorBrush x:Key="TextMain"      Color="#1E1E1E"/>
+        <SolidColorBrush x:Key="TextMuted"     Color="#5A5A5A"/>
+        <SolidColorBrush x:Key="SelBg"         Color="#CCE8FF"/>
+        <SolidColorBrush x:Key="SelBorder"     Color="#3399FF"/>
+        <SolidColorBrush x:Key="BtnFace"       Color="#E1E1E1"/>
+        <SolidColorBrush x:Key="BtnFaceHov"    Color="#CCE4F7"/>
+        <SolidColorBrush x:Key="BtnBorder"     Color="#707070"/>
+        <SolidColorBrush x:Key="BtnPressed"    Color="#B9D7F5"/>
+        <SolidColorBrush x:Key="BtnPrimary"    Color="#E1E1E1"/>
+        <SolidColorBrush x:Key="TreeHoverBg"   Color="#EDEDED"/>
+        <SolidColorBrush x:Key="TreeIcon"      Color="#666666"/>
+        <SolidColorBrush x:Key="TreeConnector" Color="#969696"/>
+        <SolidColorBrush x:Key="ClearBtnHover" Color="#E8E8E8"/>
+        <SolidColorBrush x:Key="ClearBtnPressed" Color="#D0D0D0"/>
+
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="{DynamicResource BgInput}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextMain}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderMain}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="4,3"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+
+        <Style x:Key="RevitButton" TargetType="Button">
+            <Setter Property="Background" Value="{DynamicResource BtnFace}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextMain}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BtnBorder}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="14,5"/>
+            <Setter Property="MinHeight" Value="24"/>
+            <Setter Property="Margin" Value="6,0,0,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="{DynamicResource BtnFaceHov}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Background" Value="{DynamicResource BtnPressed}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="{DynamicResource BgToolbar}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextMain}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderLight}"/>
+            <Setter Property="BorderThickness" Value="0,0,1,1"/>
+            <Setter Property="Padding" Value="6,4"/>
+        </Style>
+
+        <Style TargetType="DataGridCell">
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="6,2"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridCell">
+                        <Border Padding="{TemplateBinding Padding}" Background="Transparent">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="DataGridRow">
+            <Setter Property="Foreground" Value="{DynamicResource TextMain}"/>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource SelBg}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,6">
+            <TextBlock x:Name="FamilyTitle" FontWeight="SemiBold" FontSize="13"
+                       Foreground="{DynamicResource TextMain}" TextTrimming="CharacterEllipsis"/>
+            <TextBlock x:Name="PickerHint" Foreground="{DynamicResource TextMuted}"
+                       TextWrapping="Wrap" Margin="0,2,0,0"/>
+        </StackPanel>
+
+        <Grid Grid.Row="1" Margin="0,0,0,6">
+            <TextBox x:Name="FilterBox"/>
+            <TextBlock x:Name="FilterHint" IsHitTestVisible="False" Margin="7,0,0,0"
+                       VerticalAlignment="Center" Foreground="{DynamicResource TextMuted}"/>
+        </Grid>
+
+        <DataGrid Grid.Row="2" x:Name="TypeGrid"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  SelectionMode="Extended"
+                  SelectionUnit="FullRow"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  CanUserReorderColumns="False"
+                  HeadersVisibility="Column"
+                  GridLinesVisibility="Horizontal"
+                  HorizontalGridLinesBrush="{DynamicResource BorderLight}"
+                  Background="{DynamicResource BgPanel}"
+                  RowBackground="{DynamicResource BgPanel}"
+                  BorderBrush="{DynamicResource BorderMain}"
+                  FrozenColumnCount="1"/>
+
+        <DockPanel Grid.Row="3" Margin="0,8,0,0" LastChildFill="True">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button x:Name="BtnLoadTypes" Style="{StaticResource RevitButton}"/>
+                <Button x:Name="BtnPlaceType" Style="{StaticResource RevitButton}"/>
+                <Button x:Name="BtnCancelTypes" Style="{StaticResource RevitButton}"/>
+            </StackPanel>
+            <TextBlock x:Name="PickerStatus" VerticalAlignment="Center"
+                       Foreground="{DynamicResource TextMuted}" TextTrimming="CharacterEllipsis"/>
+        </DockPanel>
+    </Grid>
+</Window>

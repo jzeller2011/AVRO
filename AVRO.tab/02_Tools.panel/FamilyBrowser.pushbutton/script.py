@@ -35,6 +35,15 @@ FOCUS_BROWSER_AFTER_LOAD = True
 # into the Revit view first.
 PLACEMENT_MODE = "prompt"
 
+# Left-clicking a family that has a type catalog (<family>.txt next to the
+# .rfa) opens a picker so you choose which types to load, instead of loading
+# the family's built-in types.
+OPEN_TYPE_PICKER_FOR_CATALOGS = True
+
+# Keep the type picker open after Load / Load & place (Revit's own
+# "Specify Types" dialog closes).
+KEEP_TYPE_PICKER_OPEN = False
+
 import os
 import re
 import sys
@@ -69,6 +78,7 @@ from System.Windows.Threading import DispatcherTimer, DispatcherPriority
 from Autodesk.Revit.DB import (
     FilteredElementCollector,
     Family as RevitFamily,
+    FamilySymbol,
     Transaction,
 )
 from Autodesk.Revit.Exceptions import OperationCanceledException
@@ -103,6 +113,8 @@ import card_layout
 import family_browser_status
 import family_browser_library
 import revit_bridge
+import type_catalog
+import type_picker
 from revit_utils import as_unicode, revit_name
 
 # ---------------------------------------------------------------------------
@@ -354,6 +366,7 @@ class FamilyBrowserDialog(object):
         self._revit_label = None
         self._revit_label = self._read_revit_label()
         self._bridge = None
+        self._type_picker = None
         self.cfg = config.load()
         i18n.set_language(config.read_ui_language())
         self._scan = {"roots": [], "all": [], "index": {}}
@@ -2655,6 +2668,11 @@ class FamilyBrowserDialog(object):
         e.Handled = True
 
     def _on_card_click(self, card, fi, e):
+        if OPEN_TYPE_PICKER_FOR_CATALOGS:
+            catalog = type_catalog.load_for(fi.path)
+            if catalog is not None and len(catalog):
+                self._open_type_picker(fi, catalog)
+                return
         self._place_family(fi)
 
     def _apply_search(self, query):
@@ -2790,9 +2808,8 @@ class FamilyBrowserDialog(object):
             self._rollback_transaction(t, "load")
             raise
 
-    def _place_family(self, fi):
-        if self._close_requested or self._window_closing:
-            return
+    def _family_is_too_new(self, fi):
+        """True (and a status message) if *fi* needs a newer Revit."""
         family_release = self._release_number(
             getattr(fi, "revit_version", u""))
         host_label = self._current_revit_label()
@@ -2803,6 +2820,141 @@ class FamilyBrowserDialog(object):
                 "newer_version",
                 ver=as_unicode(getattr(fi, "revit_version", u"")),
                 cur=host_label))
+            return True
+        return False
+
+    # -- type catalog picker ------------------------------------------------
+
+    def _open_type_picker(self, fi, catalog):
+        """Show the catalog's types; nothing touches Revit until submit."""
+        if self._close_requested or self._window_closing:
+            return
+        if self._family_is_too_new(fi):
+            return
+        old = self._type_picker
+        self._type_picker = None
+        if old is not None:
+            old.close()
+        palette = ui_theme.DARK if self._dark_theme else ui_theme.LIGHT
+        picker = type_picker.TypePicker(
+            self.win, _THIS_DIR, fi, catalog, palette,
+            on_submit=lambda names, place, fi=fi:
+                self._load_catalog_types(fi, names, place),
+            keep_open=KEEP_TYPE_PICKER_OPEN)
+        self._type_picker = picker
+        picker.show()
+
+    def _picker_status(self, text):
+        picker = self._type_picker
+        if picker is not None and picker.is_open:
+            picker.set_status(text)
+
+    def _load_catalog_types(self, fi, names, place):
+        """Load only *names* from fi's catalog; place the first if asked.
+
+        Returns True when the request was handed to Revit.
+        """
+        if self._close_requested or self._window_closing or not names:
+            return False
+        if self._revit_busy():
+            msg = i18n.t("revit_action_busy")
+            self._set_status(msg)
+            self._picker_status(msg)
+            return False
+        config.add_recent(libcache._norm_path(fi.path))
+        self.cfg = config.load()
+        self._set_status(i18n.t("waiting_for_revit"))
+        names = list(names)
+
+        def load_in_revit(uiapp):
+            uidoc = self._bind_active_doc(uiapp)
+            if uidoc is None:
+                return i18n.t("no_open_document")
+            if place and uidoc.ActiveView is None:
+                return i18n.t("no_active_view")
+            symbols, failed = self._load_types_in_transaction(fi, names)
+            parts = []
+            if symbols and not place:
+                parts.append(i18n.t("types_loaded", n=len(symbols), name=fi.name))
+            if failed:
+                parts.append(i18n.t("types_not_loaded", names=u", ".join(failed)))
+            if symbols and place:
+                if self.win is not None and not self._window_closing:
+                    self._set_status(i18n.t(
+                        "placing_in_revit", name=revit_name(symbols[0])))
+                parts.insert(0, self._prompt_place_family(uidoc, symbols[0], fi))
+            return u"  |  ".join(parts)
+
+        def loaded(message, error):
+            if error is not None:
+                message = i18n.t("error_generic", err=as_unicode(error))
+            if message:
+                self._set_status(message)
+
+        if not self._run_in_revit(load_in_revit, loaded):
+            self._set_status(i18n.t("revit_bridge_unavailable"))
+            return False
+        return True
+
+    def _load_types_in_transaction(self, fi, names):
+        """LoadFamilySymbol for each name in one transaction.
+
+        Returns (symbols in request order, names that failed). Types already in
+        the project are reused. The first symbol is activated for placement.
+        """
+        path = os.path.normpath(fi.path)
+        if not os.path.isfile(path):
+            return [], list(names)
+        symbols = []
+        failed = []
+        label = (names[0] if len(names) == 1
+                 else u"{} ({})".format(fi.name, len(names)))
+        t = Transaction(self.doc, i18n.t("txn_load_types", label=label))
+        t.Start()
+        try:
+            for name in names:
+                sym = None
+                try:
+                    sym_ref = clr.Reference[FamilySymbol]()
+                    if self.doc.LoadFamilySymbol(
+                            path, name,
+                            family_load_options.FAMILY_LOAD_OPTIONS, sym_ref):
+                        sym = sym_ref.Value
+                except Exception as ex:
+                    libcache._log(u"load type {}: {}".format(
+                        name, as_unicode(ex)))
+                if sym is None:
+                    # Already in the project: LoadFamilySymbol returns False.
+                    sym = self._find_loaded_symbol(fi, name)
+                if sym is None:
+                    failed.append(name)
+                else:
+                    symbols.append(sym)
+            if not symbols:
+                self._rollback_transaction(t, "load_types_empty")
+                return [], failed
+            if not symbols[0].IsActive:
+                symbols[0].Activate()
+            t.Commit()
+        except Exception:
+            self._rollback_transaction(t, "load_types")
+            raise
+        self._invalidate_project_family_index()
+        return symbols, failed
+
+    def _find_loaded_symbol(self, fi, type_name):
+        family = self._find_family_in_project(fi)
+        if family is None:
+            return None
+        for sym in self._symbols_for_family(family):
+            if revit_name(sym) == type_name:
+                return sym
+        return None
+
+    def _place_family(self, fi):
+        if self._close_requested or self._window_closing:
+            return
+        if self._family_is_too_new(fi):
             return
         # Modeless: the window stays open. One Revit action at a time — a
         # second click while Revit is still prompting would only queue up
